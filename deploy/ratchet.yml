@@ -1,0 +1,81 @@
+---
+- name: Deploy library on Ratchet
+  hosts: all
+  sudo: true
+  tasks:
+    - name: Enable node ppa
+      apt_repository: repo='deb https://deb.nodesource.com/node_0.10 wheezy main' state=present
+    - name: Install node repo key
+      apt_key: keyserver=hkp://keys.gnupg.net id=1655A0AB68576280
+    - name: Install packages
+      apt: name={{item}} state=installed
+      with_items:
+        - uwsgi
+        - nodejs
+        - uwsgi-plugin-python
+
+    - name: Create library user
+      user: name=library comment=Library-Org home=/srv/library shell=/sbin/nologin system=yes
+
+    - name: Make library dirs
+      file: state=directory owner=library path={{item}}
+      with_items:
+        - /srv/library
+        - /srv/library/app
+        - /srv/library/app/static/lib
+        - /srv/library/data
+        - /srv/library/data/uploads
+
+    - name: Check out library
+      git: accept_hostkey=yes dest=/srv/library/app repo=git://github.com/robbintt/library-org force=yes
+      notify:
+        - Compile static files
+        - Reload uwsgi
+
+    - name: Configure library
+      template: src=library-conf.py dest=/srv/library/app/local_settings.py
+      notify:
+        - Reload uwsgi
+
+    - name: Setup library virtualenv
+      pip: virtualenv=/srv/library/virtualenv requirements=/srv/library/app/requirements.txt
+
+    - name: Configure uwsgi app
+      template: src=uwsgi-library.conf dest=/etc/uwsgi/apps-available/library
+      notify:
+        - Reload uwsgi
+
+    - name: Activate uwsgi app
+      file: src=/etc/uwsgi/apps-available/library dest=/etc/uwsgi/apps-enabled/library.ini state=link
+      notify:
+        - Reload uwsgi
+
+    - name: Update nginx config
+      template: src=nginx-library.conf dest=/etc/nginx/sites-available/library
+      notify:
+        - Reload nginx
+
+    - name: Activate nginx site
+      file: dest=/etc/nginx/sites-enabled/library src=/etc/nginx/sites-available/library state=link
+      notify:
+        - Reload nginx
+
+    - name: Install site-settings SCSS
+      copy: src=site-settings.scss dest=/srv/library/app/theme/_site-settings.scss
+      notify:
+        - Compile static files
+
+    - name: Install site SCSS
+      copy: src=site.scss dest=/srv/library/app/theme/_site.scss
+      notify:
+        - Compile static files
+    - name: Compile static files
+      shell: chdir=/srv/library/app su -s /bin/sh library -c make
+
+  handlers:
+    - name: Reload nginx
+      shell: service nginx configtest && service nginx reload
+    - name: Reload uwsgi
+      service: name=uwsgi state=reloaded
+    - name: Compile static files
+      shell: chdir=/srv/library/app su -s /bin/sh library -c make
